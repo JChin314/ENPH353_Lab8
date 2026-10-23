@@ -140,7 +140,29 @@ class LineFollowerEnv(GazeboEnv):
         '''
         vel_cmd = RosTwist()
 
-        # TODO: Impelement process action.
+        # Define base speeds (adjust these if the robot moves too fast or slow)
+        linear_speed = 0.3
+        angular_speed = 0.7
+
+        if action == 0:
+            # 0: Drive Left
+            vel_cmd.linear.x = linear_speed
+            vel_cmd.angular.z = angular_speed
+            
+        elif action == 1:
+            # 1: Drive Forward
+            vel_cmd.linear.x = linear_speed
+            vel_cmd.angular.z = 0.0
+            
+        elif action == 2:
+            # 2: Drive Right
+            vel_cmd.linear.x = linear_speed
+            vel_cmd.angular.z = -angular_speed
+            
+        else:
+            # Fallback: Stop
+            vel_cmd.linear.x = 0.0
+            vel_cmd.angular.z = 0.0
         
         return vel_cmd
 
@@ -151,33 +173,89 @@ class LineFollowerEnv(GazeboEnv):
                a reward
         @retval reward: the reward for the current step
         '''
-        reward = 0
-
-        # TODO: Implement process reward.
         
+        # ==========================================
+        # CONFIGURABLE REWARD PARAMETERS
+        # ==========================================
+        REWARD_CENTER = 5.0       # Reward for keeping the line in the center
+        REWARD_EDGE = 0.0         # Small reward for surviving on the edges
+        PENALTY_LOST_LINE = -10.0 # Heavy penalty for losing the line
+        # ==========================================
+
+        reward = 0.0
+
+        if terminated:
+            # The robot lost the line completely
+            reward = PENALTY_LOST_LINE
+        else:
+            # Reward based on the STATE the robot is currently in
+            if state == 1:
+                reward = REWARD_CENTER
+            elif state == 0 or state == 2:
+                reward = REWARD_EDGE
+
         return reward
 
 
     def process_obs(self, obs: RosImage):
         '''
         @brief Identifies the line in the image and populates the state array
-               based on the line position (i.e. state=0 line is left, 
-               state=1 line is in the center)
-        @param obs raw image from Gazebo sim
-        @retval state: the line position as a value: 
-            -1 (no line), 0 (left), 1 (center), 2 (right)
-        @retval terminated: the termination condition occured - the line is no 
-                    longer in the field of the camera
         '''
         cv_image = CvBridge().imgmsg_to_cv2(obs, desired_encoding='bgr8')
+        height, width = cv_image.shape[:2]
 
-        state = 0
-        terminated = False
+        PIXELS_FROM_BOTTOM = 50   
+        THRESHOLD_VALUE = 100      
 
-        # TODO: Implement process observation
+        scan_y = height - PIXELS_FROM_BOTTOM
+        if scan_y < 0: 
+            scan_y = 0
+            
+        row_bgr = cv_image[scan_y:scan_y+1, 0:width]
+        row_gray = cv2.cvtColor(row_bgr, cv2.COLOR_BGR2GRAY)[0]
+        row_is_line = row_gray < THRESHOLD_VALUE
+        
+        line_indices = np.where(row_is_line)[0]
+
+        # --- VISUALIZATION: Draw State Boundaries ---
+        # Draws blue lines showing the 3 zones (Left, Center, Right)
+        cv2.line(cv_image, (int(width/3), 0), (int(width/3), height), (255, 0, 0), 2)
+        cv2.line(cv_image, (int(2*width/3), 0), (int(2*width/3), height), (255, 0, 0), 2)
+
+        if len(line_indices) > 0:
+            left_edge = line_indices[0]
+            right_edge = line_indices[-1]
+            cx = (left_edge + right_edge) // 2
+
+            # --- VISUALIZATION: Draw Tracking Square ---
+            # Draws a red square exactly where the logic detects the line
+            square_size = 25
+            half_size = square_size // 2
+            top_left = (cx - half_size, scan_y - half_size)
+            bottom_right = (cx + half_size, scan_y + half_size)
+            cv2.rectangle(cv_image, top_left, bottom_right, (0, 0, 255), -1)
+
+            left_boundary = width / 3
+            right_boundary = 2 * (width / 3)
+
+            if cx < left_boundary:
+                state = 0  
+            elif cx > right_boundary:
+                state = 2  
+            else:
+                state = 1  
+                
+            terminated = False
+
+        else:
+            state = -1
+            terminated = True
+
+        # --- VISUALIZATION: Show the Live Feed ---
+        cv2.imshow("Robot View", cv_image)
+        cv2.waitKey(1)  # 1ms delay is required for OpenCV to render the window
 
         return state, terminated
-
 
     # Shutting down ROS2
     def user_close(self):
